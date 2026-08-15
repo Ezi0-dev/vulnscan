@@ -2,6 +2,7 @@ import httpx
 from bs4 import BeautifulSoup
 from urllib.parse import urljoin, urlparse, parse_qsl, urlunparse, urlencode
 from collections import deque
+import json
 
 BASE_URL = 'http://localhost:8080'
 
@@ -120,6 +121,10 @@ def normalize_url(url: str) -> str:
     ))
     return normalized
 
+def save_results(pages: list[dict], filepath: str):
+    with open(filepath, "w") as f:
+        json.dump(pages, f, indent=2)
+
 
 def crawl(client: httpx.Client, start_url: str, max_depth: int=3) -> list[dict]:
     queue = deque([(start_url, 0)])
@@ -128,6 +133,7 @@ def crawl(client: httpx.Client, start_url: str, max_depth: int=3) -> list[dict]:
 
     while queue:
         url, depth = queue.popleft()
+        print(f"[depth {depth}] {url}")
 
         norm = normalize_url(url)
         if norm in visited:
@@ -173,6 +179,7 @@ def main():
 
         results = crawl(client, BASE_URL, max_depth=3)
         print(results)
+        save_results(results, "sitemap.json")
         print(f"Crawled {len(results)} pages.")
 
 
