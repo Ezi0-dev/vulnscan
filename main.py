@@ -133,7 +133,6 @@ def crawl(client: httpx.Client, start_url: str, max_depth: int=3) -> list[dict]:
 
     while queue:
         url, depth = queue.popleft()
-        print(f"[depth {depth}] {url}")
 
         norm = normalize_url(url)
         if norm in visited:
