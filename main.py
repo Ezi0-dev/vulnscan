@@ -6,10 +6,24 @@ import json
 
 BASE_URL = 'http://localhost:8080'
 
-def login(client: httpx.Client, base_url: str, username: str, password: str) -> bool:
+def login(client: httpx.Client, base_url: str, username: str, password: str) -> tuple[bool, list[dict]]:
     login_url = f"{BASE_URL}/login.php"
 
     resp = client.get(login_url)
+    links = extract_links(resp.text, login_url, BASE_URL)
+    forms = extract_forms(resp.text, login_url)
+    headers = check_headers(resp)
+    cookies = check_cookies(resp)
+
+    # Ugly but works, might fix later
+    login_results = {
+            'url': login_url,
+            'status': resp.status_code,
+            'forms': forms,
+            'links_found': links,
+            'headers': headers,
+            'cookies': cookies
+    }
 
     soup = BeautifulSoup(resp.text, "html.parser")
 
@@ -25,14 +39,13 @@ def login(client: httpx.Client, base_url: str, username: str, password: str) -> 
     login_resp = client.post(login_url, data=payload)
 
     print(login_resp)
-    cookies = check_cookies(resp)
-    print(cookies)
+
     if login_resp.status_code == 302:
         print("im in")
-        return True
+        return True, login_results
     else:
         print("sad")
-        return False
+        return False, login_results
     pass
 
 def fetch_page(client: httpx.Client, url: str, timeout: float = 10.0) -> httpx.Response | None:
@@ -248,13 +261,18 @@ def crawl(client: httpx.Client, start_url: str, max_depth: int=3) -> list[dict]:
 
 def main():
     with httpx.Client() as client:
-        ok = login(client, BASE_URL, "admin", "password")
+        ok, login_results = login(client, BASE_URL, "admin", "password")
         if not ok:
             print("Login failed")
             return
 
+
+
+
         results, all_urls = crawl(client, BASE_URL, max_depth=3)
         ##print(results)
+
+        results.insert(0, login_results)
         save_results(results, "sitemap.json")
         save_results(sorted(all_urls), "unique_paths.json")
         print(f"Crawled {len(results)} pages.")
