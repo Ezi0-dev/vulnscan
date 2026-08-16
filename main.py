@@ -25,6 +25,8 @@ def login(client: httpx.Client, base_url: str, username: str, password: str) -> 
     login_resp = client.post(login_url, data=payload)
 
     print(login_resp)
+    cookies = check_cookies(resp)
+    print(cookies)
     if login_resp.status_code == 302:
         print("im in")
         return True
@@ -162,6 +164,37 @@ def check_headers(response: httpx.Response) -> list[dict]:
 
     return results
 
+def check_cookies(response: httpx.Response) -> list[dict]:
+    results = []
+    cookies = response.headers.get_list("set-cookie")
+
+    for cookie_str in cookies:
+        lower = cookie_str.lower()
+        cookie_name = cookie_str.split("=")[0].strip()
+
+        if "secure" not in lower:
+            results.append(_finding(
+                f"{cookie_name} - Secure flag not set, can leak over HTTP", "medium"
+            ))
+
+        if "httponly" not in lower:
+            results.append(_finding(
+                f"{cookie_name} - HttpOnly not set, XSS vulnerable", "high"
+            ))
+
+        if "samesite=none" in lower and "secure" not in lower:
+            results.append(_finding(
+                f"{cookie_name} - SameSite=None without Secure, CSRF exposure", "high"
+            ))
+
+        elif "samesite" not in lower:
+            results.append(_finding(
+                f"{cookie_name} - SameSite flag missing", "low"
+            ))
+                
+    print(cookies)
+    return results
+
 def crawl(client: httpx.Client, start_url: str, max_depth: int=3) -> list[dict]:
     queue = deque([(start_url, 0)])
     visited = set()
@@ -190,6 +223,7 @@ def crawl(client: httpx.Client, start_url: str, max_depth: int=3) -> list[dict]:
             links = extract_links(page.text, url, BASE_URL)
             forms = extract_forms(page.text, url)
             headers = check_headers(page)
+            cookies = check_cookies(page)
 
             all_discovered_urls.update(normalize_url(l) for l in links)
 
@@ -198,7 +232,8 @@ def crawl(client: httpx.Client, start_url: str, max_depth: int=3) -> list[dict]:
                 'status': page.status_code,
                 'forms': forms,
                 'links_found': links,
-                'headers': headers
+                'headers': headers,
+                'cookies': cookies
             })
 
         if depth < max_depth:
