@@ -125,6 +125,42 @@ def save_results(pages: list[dict], filepath: str):
     with open(filepath, "w") as f:
         json.dump(pages, f, indent=2)
 
+def _finding(issue: str, severity: str) -> dict:
+    return {"issue": issue, "severity": severity}
+
+def check_headers(response: httpx.Response) -> list[dict]:
+    results = []
+    headers = response.headers
+
+    if "content-security-policy" not in headers:
+        results.append(_finding(
+            "Missing Content-Security-Policy header (XSS/injection risk)", "medium"
+        ))
+
+    if "x-frame-options" not in headers:
+        results.append(_finding(
+            "Missing X-Frame-Options header (clickjacking risk)", "medium"
+        ))
+
+    xcto = headers.get("x-content-type-options", "").lower()
+    if xcto != "nosniff":
+        results.append(_finding(
+            "X-Content-Type-Options missing or not 'nosniff' (MIME-sniffing risk)", "low"
+        ))
+
+    if response.url.scheme == "https" and "strict-transport-security" not in headers:
+        results.append(_finding(
+            "Missing Strict-Transport-Security header on HTTPS response", "high"
+        ))
+
+    for leaky_header in ("server", "x-powered-by"):
+        if leaky_header in headers:
+            results.append(_finding(
+                f"{leaky_header.title()} header exposes version info: {headers[leaky_header]}",
+                "low"
+            ))
+
+    return results
 
 def crawl(client: httpx.Client, start_url: str, max_depth: int=3) -> list[dict]:
     queue = deque([(start_url, 0)])
@@ -153,6 +189,7 @@ def crawl(client: httpx.Client, start_url: str, max_depth: int=3) -> list[dict]:
         if page.status_code == 200:
             links = extract_links(page.text, url, BASE_URL)
             forms = extract_forms(page.text, url)
+            headers = check_headers(page)
 
             all_discovered_urls.update(normalize_url(l) for l in links)
 
@@ -160,7 +197,8 @@ def crawl(client: httpx.Client, start_url: str, max_depth: int=3) -> list[dict]:
                 'url': norm,
                 'status': page.status_code,
                 'forms': forms,
-                'links_found': links
+                'links_found': links,
+                'headers': headers
             })
 
         if depth < max_depth:
@@ -181,7 +219,7 @@ def main():
             return
 
         results, all_urls = crawl(client, BASE_URL, max_depth=3)
-        print(results)
+        ##print(results)
         save_results(results, "sitemap.json")
         save_results(sorted(all_urls), "unique_paths.json")
         print(f"Crawled {len(results)} pages.")
