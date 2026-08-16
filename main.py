@@ -130,6 +130,7 @@ def crawl(client: httpx.Client, start_url: str, max_depth: int=3) -> list[dict]:
     queue = deque([(start_url, 0)])
     visited = set()
     results = []
+    all_discovered_urls = set()
 
     while queue:
         url, depth = queue.popleft()
@@ -152,6 +153,9 @@ def crawl(client: httpx.Client, start_url: str, max_depth: int=3) -> list[dict]:
         if page.status_code == 200:
             links = extract_links(page.text, url, BASE_URL)
             forms = extract_forms(page.text, url)
+
+            all_discovered_urls.update(normalize_url(l) for l in links)
+
             results.append({
                 'url': norm,
                 'status': page.status_code,
@@ -165,7 +169,7 @@ def crawl(client: httpx.Client, start_url: str, max_depth: int=3) -> list[dict]:
                 if link_norm not in visited:
                     queue.append((link, depth + 1))
 
-    return results
+    return results, all_discovered_urls
 
 
 
@@ -176,9 +180,10 @@ def main():
             print("Login failed")
             return
 
-        results = crawl(client, BASE_URL, max_depth=3)
+        results, all_urls = crawl(client, BASE_URL, max_depth=3)
         print(results)
         save_results(results, "sitemap.json")
+        save_results(sorted(all_urls), "unique_paths.json")
         print(f"Crawled {len(results)} pages.")
 
 
