@@ -207,9 +207,10 @@ def check_cookies(response: httpx.Response) -> list[dict]:
     print(cookies)
     return results
 
-def check_reflected_xss(client: httpx.Client, form: dict, marker: str) -> dict | None:
+def check_reflected_xss(client: httpx.Client, form: dict, marker: str) -> list[dict]:
     dangerous = "<script>"
     full_marker = marker + dangerous
+    findings = []
 
     for target_input in form["inputs"]: # Gets all inputs on the page
         payload = {}
@@ -237,14 +238,14 @@ def check_reflected_xss(client: httpx.Client, form: dict, marker: str) -> dict |
         idx = resp.text.find(dangerous)
         evidence = resp.text[max(0, idx - 40): idx + 40] # Some context, without dumping the entire page
 
-        return {
+        findings.append({
             "url": form["action"],
             "field": target_input["name"],
             "payload": full_marker,
             "evidence": evidence
-        }
+        })
 
-    return None
+    return findings
 
 
 def crawl(client: httpx.Client, start_url: str, max_depth: int=3) -> list[dict]:
@@ -302,9 +303,6 @@ def main():
         if not ok:
             print("Login failed")
             return
-
-
-
 
         results, all_urls = crawl(client, BASE_URL, max_depth=3)
         ##print(results)
