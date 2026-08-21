@@ -46,7 +46,6 @@ def login(client: httpx.Client, base_url: str, username: str, password: str) -> 
     else:
         print("sad")
         return False, login_results
-    pass
 
 def fetch_page(client: httpx.Client, url: str, timeout: float = 10.0) -> httpx.Response | None:
     try: 
@@ -208,6 +207,46 @@ def check_cookies(response: httpx.Response) -> list[dict]:
     print(cookies)
     return results
 
+def check_reflected_xss(client: httpx.Client, form: dict, marker: str) -> dict | None:
+    dangerous = "<script>"
+    full_marker = marker + dangerous
+
+    for target_input in form["inputs"]: # Gets all inputs on the page
+        payload = {}
+        for inp in form["inputs"]: # Checks one at a time
+            if inp["name"] == target_input["name"]: # Current field being tested
+                payload[inp["name"]] = full_marker # Example = {username: MARKER, password: 1, Login: 1}
+            else:
+                payload[inp["name"]] = "1" # Sets other fields to 1 so the form submission does not fail
+
+        try:
+            if form["method"] == "GET":
+                resp = client.get(form["action"], params=payload)
+            else:
+                resp = client.post(form["action"], data=payload)
+        except httpx.RequestError:
+            continue
+
+        if marker not in resp.text:
+            continue # Not reflected at all, try next field
+
+        if dangerous not in resp.text:
+            continue # Reflected but escaped, try next field
+
+        # Vulnerable
+        idx = resp.text.find(dangerous)
+        evidence = resp.text[max(0, idx - 40): idx + 40] # Some context, without dumping the entire page
+
+        return {
+            "url": form["action"],
+            "field": target_input["name"],
+            "payload": full_marker,
+            "evidence": evidence
+        }
+
+    return None
+
+
 def crawl(client: httpx.Client, start_url: str, max_depth: int=3) -> list[dict]:
     queue = deque([(start_url, 0)])
     visited = set()
@@ -257,8 +296,6 @@ def crawl(client: httpx.Client, start_url: str, max_depth: int=3) -> list[dict]:
 
     return results, all_discovered_urls
 
-
-
 def main():
     with httpx.Client() as client:
         ok, login_results = login(client, BASE_URL, "admin", "password")
@@ -276,7 +313,6 @@ def main():
         save_results(results, "sitemap.json")
         save_results(sorted(all_urls), "unique_paths.json")
         print(f"Crawled {len(results)} pages.")
-
 
 if __name__ == "__main__":
     main()
