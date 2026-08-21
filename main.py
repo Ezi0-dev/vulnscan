@@ -325,6 +325,10 @@ def main():
         results.insert(0, login_results)
         save_results(results, "sitemap.json")
         save_results(sorted(all_urls), "unique_paths.json")
+
+        xss_findings = scan_xss(client, results)
+        save_results(xss_findings, "xss_findings.json")
+        print(f"Found {len(xss_findings)} potential XSS issues.")
         print(f"Crawled {len(results)} pages.")
 
 if __name__ == "__main__":
