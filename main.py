@@ -1,4 +1,5 @@
 import httpx
+import random
 from bs4 import BeautifulSoup
 from urllib.parse import urljoin, urlparse, parse_qsl, urlunparse, urlencode
 from collections import deque
@@ -246,6 +247,20 @@ def check_reflected_xss(client: httpx.Client, form: dict, marker: str) -> list[d
         })
 
     return findings
+
+def scan_xss(client: httpx.Client, pages: list[dict]) -> list[dict]:
+    all_findings = []
+
+    for page in pages:
+        for form in page["forms"]:
+            marker = f"zxcv{random.randint(1000,9999)}XSS"
+            findings = check_reflected_xss(client, form, marker)
+
+            for f in findings:
+                f["source_page"] = page["url"] # Logs which page had the form
+                all_findings.append(f)
+
+    return all_findings
 
 
 def crawl(client: httpx.Client, start_url: str, max_depth: int=3) -> list[dict]:
