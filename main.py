@@ -6,8 +6,10 @@ from collections import deque
 import json
 
 BASE_URL = 'http://localhost:8080'
+SKIP_ACTIONS = ["logout.php", "login.php", "security.php"]
+SKIP_URLS = ["logout.php"]
 
-def login(client: httpx.Client, base_url: str, username: str, password: str) -> tuple[bool, list[dict]]:
+def login(client: httpx.Client, username: str, password: str) -> tuple[bool, list[dict]]:
     login_url = f"{BASE_URL}/login.php"
 
     resp = client.get(login_url)
@@ -47,6 +49,21 @@ def login(client: httpx.Client, base_url: str, username: str, password: str) -> 
     else:
         print("sad")
         return False, login_results
+
+def set_security_level(client: httpx.Client, level: str = "low") -> bool:
+    security_url = f"{BASE_URL}/security.php"
+
+    resp = client.get(security_url)
+    soup = BeautifulSoup(resp.text, "html.parser")
+
+    token_input = soup.find("input", {"name" : "user_token"})
+    user_token = token_input.get("value")
+
+    payload = {
+        "security": level,
+        "seclev_submit": "Submit",
+        "user_token": user_token
+    }
 
 def fetch_page(client: httpx.Client, url: str, timeout: float = 10.0) -> httpx.Response | None:
     try: 
@@ -105,10 +122,12 @@ def extract_forms(html: str, current_url: str) -> list[dict]:
                 continue
 
             input_type = tag.get("type", "text")
+            value = tag.get("value", "") # Capture the current value, defaults to empty string
 
             inputs.append({
                 "name": name,
-                "type": input_type
+                "type": input_type,
+                "value": value
             })
 
         results.append({
@@ -213,21 +232,32 @@ def check_reflected_xss(client: httpx.Client, form: dict, marker: str) -> list[d
     full_marker = marker + dangerous
     findings = []
 
+    print("FORM ACTION:", form["action"], "| METHOD:", form["method"])
+
     for target_input in form["inputs"]: # Gets all inputs on the page
         payload = {}
         for inp in form["inputs"]: # Checks one at a time
             if inp["name"] == target_input["name"]: # Current field being tested
                 payload[inp["name"]] = full_marker # Example = {username: MARKER, password: 1, Login: 1}
+            elif inp.get("type") == "hidden":
+                payload[inp["name"]] = inp.get("value", "1") # Preserve the hidden fields
             else:
                 payload[inp["name"]] = "1" # Sets other fields to 1 so the form submission does not fail
 
+        print(form["inputs"])
         try:
             if form["method"] == "GET":
-                resp = client.get(form["action"], params=payload)
+                resp = client.get(form["action"], follow_redirects=True, params=payload)
+                print("=== FULL RESPONSE START ===")
+                print(resp.text)
+                print("=== FULL RESPONSE END ===")
             else:
-                resp = client.post(form["action"], data=payload)
+                resp = client.post(form["action"], follow_redirects=True, data=payload)
         except httpx.RequestError:
             continue
+
+        #print(f"Testing {form['action']} field={target_input['name']}")
+        #print(resp.text)
 
         if marker not in resp.text:
             continue # Not reflected at all, try next field
@@ -253,6 +283,10 @@ def scan_xss(client: httpx.Client, pages: list[dict]) -> list[dict]:
 
     for page in pages:
         for form in page["forms"]:
+            if any(skip in form["action"] for skip in SKIP_ACTIONS): # Skips logout, login, etc
+                print("SKIPPING:", form["action"])
+                continue
+            print("TESTING:", form["action"])
             marker = f"zxcv{random.randint(1000,9999)}XSS"
             findings = check_reflected_xss(client, form, marker)
 
@@ -306,6 +340,8 @@ def crawl(client: httpx.Client, start_url: str, max_depth: int=3) -> list[dict]:
 
         if depth < max_depth:
             for link in links:
+                if any(skip in link for skip in SKIP_URLS):
+                    continue
                 link_norm = normalize_url(link)
                 if link_norm not in visited:
                     queue.append((link, depth + 1))
@@ -318,6 +354,8 @@ def main():
         if not ok:
             print("Login failed")
             return
+
+        client.get(base_url + "/security.php", params={"phpids": "off"})
 
         results, all_urls = crawl(client, BASE_URL, max_depth=3)
         ##print(results)
