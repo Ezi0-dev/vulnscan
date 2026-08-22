@@ -7,7 +7,7 @@ import json
 
 BASE_URL = 'http://localhost:8080'
 SKIP_ACTIONS = ["logout.php", "login.php", "security.php"]
-SKIP_URLS = ["logout.php"]
+SKIP_URLS = ["logout.php", "security.php"] # Only for crawler
 
 def login(client: httpx.Client, username: str, password: str) -> tuple[bool, list[dict]]:
     login_url = f"{BASE_URL}/login.php"
@@ -64,6 +64,10 @@ def set_security_level(client: httpx.Client, level: str = "low") -> bool:
         "seclev_submit": "Submit",
         "user_token": user_token
     }
+
+    set_resp = client.post(security_url, data=payload)
+
+    return set_resp.status_code == 302
 
 def fetch_page(client: httpx.Client, url: str, timeout: float = 10.0) -> httpx.Response | None:
     try: 
@@ -350,12 +354,13 @@ def crawl(client: httpx.Client, start_url: str, max_depth: int=3) -> list[dict]:
 
 def main():
     with httpx.Client() as client:
-        ok, login_results = login(client, BASE_URL, "admin", "password")
+        ok, login_results = login(client, "admin", "password")
         if not ok:
             print("Login failed")
             return
-
-        client.get(base_url + "/security.php", params={"phpids": "off"})
+        
+        set_security_level(client, "low")
+        client.get(BASE_URL + "/security.php", params={"phpids": "off"}) # Turn off PHPIDS if its enabled
 
         results, all_urls = crawl(client, BASE_URL, max_depth=3)
         ##print(results)
