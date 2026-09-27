@@ -1,3 +1,5 @@
 sitemap.json
 unique_paths.json
 xss_findings.json
+sqli_findings.json
+test.py

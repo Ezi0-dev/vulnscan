@@ -7,8 +7,8 @@ import json
 from difflib import SequenceMatcher
 
 BASE_URL = 'http://localhost:8080'
-SKIP_ACTIONS = ["logout.php", "login.php", "security.php"]
-SKIP_URLS = ["logout.php", "security.php"] # Only for crawler
+SKIP_ACTIONS = ["logout.php", "login.php", "security", "setup", "csrf"]
+SKIP_URLS = ["logout.php", "security", "setup", "csrf"] # Only for crawler
 
 BOOLEAN_TRUE_PAYLOAD = "1' OR '1'='1"
 BOOLEAN_FALSE_PAYLOAD = "1' AND '1'='2"
@@ -258,7 +258,7 @@ def check_reflected_xss(client: httpx.Client, form: dict, marker: str) -> list[d
     full_marker = marker + dangerous
     findings = []
 
-    print("FORM ACTION:", form["action"], "| METHOD:", form["method"])
+    #print("FORM ACTION:", form["action"], "| METHOD:", form["method"])
 
     for target_input in form["inputs"]: # Gets all inputs on the page
         payload = {}
@@ -270,13 +270,13 @@ def check_reflected_xss(client: httpx.Client, form: dict, marker: str) -> list[d
             else:
                 payload[inp["name"]] = "1" # Sets other fields to 1 so the form submission does not fail
 
-        print(form["inputs"])
+        #print(form["inputs"])
         try:
             if form["method"] == "GET":
                 resp = client.get(form["action"], follow_redirects=True, params=payload)
-                print("=== FULL RESPONSE START ===")
-                print(resp.text)
-                print("=== FULL RESPONSE END ===")
+                #print("=== FULL RESPONSE START ===")
+                #print(resp.text)
+                #print("=== FULL RESPONSE END ===")
             else:
                 resp = client.post(form["action"], follow_redirects=True, data=payload)
         except httpx.RequestError:
@@ -326,7 +326,7 @@ def check_sqli(client: httpx.Client, form: dict, payloads: list[str], error_sign
     findings = []
 
     for field in form["inputs"]:
-        if field["type"] == "hidden":
+        if field["type"] in ("hidden", "submit"):
             continue
 
         for payload in payloads:
@@ -337,36 +337,41 @@ def check_sqli(client: httpx.Client, form: dict, payloads: list[str], error_sign
                 elif inp["name"] == field["name"]:
                     data[inp["name"]] = payload # Field being ran
                 else:
-                    data[inp["name"]] = "1" # Safe filler for other fields
+                    data[inp["name"]] = inp["value"] if inp["value"] else "1" # Safe filler for other fields
 
-        try:
-            if form["method"] == "GET":
-                resp = client.get(form["action"], follow_redirects=True, params=payload)
-            else:
-                resp = client.post(form["action"], follow_redirects=True, data=payload)
-        except httpx.RequestError:
-            continue
+            print(f"[check_sqli] sending data: {data}")
 
-        resp_text = resp.text.lower()
+            try:
+                if form["method"] == "GET":
+                    resp = client.get(form["action"], follow_redirects=True, params=data)
+                    print(f"[check_sqli] actual request URL: {resp.request.url}")
+                else:
+                    resp = client.post(form["action"], follow_redirects=True, data=data)
+            except httpx.RequestError:
+                continue
 
-        for sig in error_signatures:
-            if sig in resp_text:
-                findings.append({
-                    "url": form["action"],
-                    "field": field["name"],
-                    "payload": payload,
-                    "evidence": sig,
-                })
-                break
+            resp_text = resp.text.lower()
+
+            for sig in error_signatures:
+                if sig in resp_text:
+                    findings.append({
+                        "url": form["action"],
+                        "field": field["name"],
+                        "payload": payload,
+                        "evidence": sig,
+                    })
+                    break
 
     return findings
 
-def check_sqli_boolean(client: httpx.Client, original_value: str, form: dict, true_payload: str, false_payload: str) -> list[dict]:
+def check_sqli_boolean(client: httpx.Client, form: dict, true_payload: str, false_payload: str) -> list[dict]:
     findings = []
 
     for field in form["inputs"]:
-        if field["type"] == "hidden":
+        if field["type"] in ("hidden", "submit"):
             continue
+
+        original_value = field["value"] if field["value"] else "1" #fallback
 
         data_baseline = {}
         for inp in form["inputs"]:
@@ -417,13 +422,45 @@ def check_sqli_boolean(client: httpx.Client, original_value: str, form: dict, tr
         sim_true = similarity(resp_baseline.text, resp_true.text)
         sim_false = similarity(resp_baseline.text, resp_false.text)
 
-        if sim_true > 0.90 and sim_false < 0.98:
+        if sim_true != 1.0 and sim_false != 1.0: # CALIBRATE
             findings.append({
                 "url": form["action"],
                 "field": field["name"],
                 "payload": f"{true_payload} / {false_payload}",
                 "evidence": f"sim_true={sim_true:.2f}, sim_false={sim_false:.2f}",
             })
+
+    return findings
+
+def scan_sqli(client: httpx.Client, pages: list[dict]) -> list[dict]:
+    findings = []
+
+    for page in pages:
+        for form in page["forms"]:
+            print(f"[scan_sqli] Testing form on {page['url']} -> action={form['action']}")
+
+            if form["action"] in SKIP_ACTIONS:
+                print(f"  -> skipped (SKIP_ACTIONS)")
+                continue
+
+            #Error based
+            error_findings = check_sqli(client, form, ERROR_PAYLOADS, ERROR_SIGNATURES)
+            for f in error_findings:
+                f["source_page"] = page["url"]
+                f["type"] = "error-based"
+            findings.extend(error_findings)
+
+            #Boolean based
+            boolean_findings = check_sqli_boolean(
+                client,
+                form=form, 
+                true_payload=BOOLEAN_TRUE_PAYLOAD, 
+                false_payload=BOOLEAN_FALSE_PAYLOAD)
+            
+            for f in boolean_findings:
+                f["source_page"] = page["url"]
+                f["type"] = "boolean-based"
+            findings.extend(boolean_findings)
 
     return findings
 
@@ -487,23 +524,22 @@ def main():
         
         set_security_level(client, "low")
         client.get(BASE_URL + "/security.php", params={"phpids": "off"}) # Turn off PHPIDS if its enabled
-        sqli_form = {
-            "action": f"{BASE_URL}/vulnerabilities/sqli/",
-            "method": "GET",
-            "inputs": [
-                {"name": "id", "type": "text", "value": "1"},
-                {"name": "Submit", "type": "submit", "value": "Submit"},
-            ],
-        }
 
-        test_findings = check_sqli_boolean(
-            client,
-            original_value="1",
-            form=sqli_form,
-            true_payload="1' OR '1'='1",
-            false_payload="1' AND '1'='2",
-        )
-        print("TEST FINDINGS:", test_findings)
+        results, all_urls = crawl(client, BASE_URL, max_depth=3)
+        ##print(results)
+
+        results.insert(0, login_results)
+        save_results(results, "sitemap.json")
+        save_results(sorted(all_urls), "unique_paths.json")
+
+        xss_findings = scan_xss(client, results)
+        save_results(xss_findings, "xss_findings.json")
+        print(f"Found {len(xss_findings)} potential XSS issues.")
+        print(f"Crawled {len(results)} pages.")
+
+        sqli_findings = scan_sqli(client, results)
+        print(f"Found {len(sqli_findings)} SQLi findings:")
+        save_results(sqli_findings, "sqli_findings.json")
 
 if __name__ == "__main__":
     main()
